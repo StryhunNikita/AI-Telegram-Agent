@@ -1,1 +1,34 @@
+# ENV
 .env
+.env.* 
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyd
+*.so
+
+# virtual env
+venv/
+.venv/
+
+# IDE / editors
+.idea/
+.vscode/
+*.swp
+
+# pytest / mypy / coverage
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# logs
+*.log
