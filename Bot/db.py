@@ -197,9 +197,6 @@ class Database:
         mime_type: Optional[str] = None,
         file_size: Optional[int] = None,
     ) -> int:
-        """
-        Сохраняем информацию о файле агента и возвращаем его id.
-        """
         row = await self.fetchrow(
             """
             INSERT INTO agent_files (filename, telegram_file_id, openai_file_id,
@@ -217,9 +214,6 @@ class Database:
         return row["id"]
 
     async def list_agent_files(self, limit: int = 20, offset: int = 0):
-        """
-        Список файлов для отображения в админке.
-        """
         return await self.fetch(
             """
             SELECT id, filename, created_at
@@ -232,9 +226,6 @@ class Database:
         )
 
     async def get_agent_file(self, file_id: int):
-        """
-        Получить полную информацию по одному файлу.
-        """
         return await self.fetchrow(
             """
             SELECT *
@@ -245,9 +236,6 @@ class Database:
         )
 
     async def delete_agent_file(self, file_id: int) -> None:
-        """
-        Удалить файл из базы (позже сюда добавим удаление из OpenAI).
-        """
         await self.execute(
             """
             DELETE FROM agent_files

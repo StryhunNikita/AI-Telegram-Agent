@@ -15,7 +15,7 @@ from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
 from typing import Optional
 
-from .llm import ask_assistant
+from .llm import ask_assistant, create_vector_store
 from .db import db
 from .agent_files import agent_file_manager
 
@@ -86,12 +86,8 @@ async def on_admin_edit_prompt(callback: CallbackQuery):
     )
     await callback.answer()
 
-from .llm import create_vector_store
 
 async def load_agent_vector_store_from_db():
-    """
-    Загружаем id vector store из БД или создаём новый.
-    """
     global AGENT_VECTOR_STORE_ID
 
     value = await db.get_setting("agent_vector_store_id")
@@ -178,11 +174,11 @@ async def on_admin_files_list(callback: CallbackQuery):
             ]
         )
 
-        text = "\n".join(lines)
-        files_kb = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+    text = "\n".join(lines)
+    files_kb = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
-        await callback.message.answer(text, reply_markup=files_kb)
-        await callback.answer()
+    await callback.message.answer(text, reply_markup=files_kb)
+    await callback.answer()
 
 
 @dp.callback_query(F.data.startswith("admin_file_download:"))

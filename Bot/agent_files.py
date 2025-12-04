@@ -49,21 +49,16 @@ class AgentFileManager:
             print("Ошибка при скачивании файла:", e)
             return "Ошибка при загрузке файла из Telegram."
 
+        openai_file_id = None
         try:
-            success = await upload_file_to_vector_store(save_path, vector_store_id)
+            openai_file_id = await upload_file_to_vector_store(save_path, vector_store_id)
+            if not openai_file_id:
+                return "Не удалось загрузить файл в vector store."
         finally:
             try:
                 os.remove(save_path)
             except OSError:
-                pass    
-        if not success:
-            return "Ошибка при обработке файла в vector store OpenAI."
-
-        openai_file_id = None
-        if vector_store_id:
-            openai_file_id = await upload_file_to_vector_store(save_path, vector_store_id)
-            if not openai_file_id:
-                return "Не удалось загрузить файл в vector store."
+                pass
 
         await db.save_agent_file(
             filename=filename,
@@ -116,7 +111,6 @@ class AgentFileManager:
         return True
 
     async def get_recent_files(self, limit: int = 10, offset: int = 0):
-        from .db import db
         return await db.list_agent_files(limit=limit, offset=offset)
 
 

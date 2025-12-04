@@ -1,6 +1,6 @@
 import os
 import asyncio
-from typing import Optional, Sequence
+from typing import Optional
 from dotenv import load_dotenv
 from openai import OpenAI
 
