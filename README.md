@@ -33,7 +33,7 @@ The system supports dynamic updating of the agent’s instructions (system promp
 
 ---
 
-##🧑‍💼 Admin Takeover & Chat Management
+## 🧑‍💼 Admin Takeover & Chat Management
 
 - Admins can take over conversations from the AI at any moment via a dedicated log chat
 - Real-time client ↔ admin message routing inside Telegram
