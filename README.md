@@ -30,3 +30,13 @@ The system supports dynamic updating of the agent’s instructions (system promp
 - Provides helpful responses
 - Uses admin-uploaded files as a knowledge source
 - Automatically adapts answers based on updated prompt
+
+---
+
+##🧑‍💼 Admin Takeover & Chat Management
+
+- Admins can take over conversations from the AI at any moment via a dedicated log chat
+- Real-time client ↔ admin message routing inside Telegram
+- Full conversation history is available when opening a client chat
+- Soft chat closing with automatic fallback to AI after a timeout
+- All client and operator messages are logged for transparency and monitoring
