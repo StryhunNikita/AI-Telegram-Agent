@@ -3,7 +3,7 @@ import html
 import asyncio
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import Command
 from aiogram.types import (
     Message,
     InlineKeyboardMarkup,
@@ -13,22 +13,29 @@ from aiogram.types import (
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
-from typing import Optional
+from typing import Optional, Tuple
 
 from .llm import ask_assistant, create_vector_store
 from .db import db
 from .agent_files import agent_file_manager
 
+from .log_utils import send_ai_log, send_admin_user_message
+from .config import ADMIN_IDS
+from .takeover import takeover_router
+from datetime import datetime, timezone
+TAKEOVER_TIMEOUT_MINUTES = 20
+
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 bot = Bot(
     token=TELEGRAM_BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
 dp = Dispatcher()
+
+dp.include_router(takeover_router)
 
 DEFAULT_AGENT_PROMPT = os.getenv(
     "SYSTEM_PROMPT",
@@ -60,7 +67,7 @@ admin_files_kb = InlineKeyboardMarkup(
 
 @dp.message(Command("admin"))
 async def admin_menu(message: Message):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id not in ADMIN_IDS:
         return await message.answer("У вас нет доступа к админке!")
 
     await message.answer(
@@ -73,7 +80,7 @@ async def admin_menu(message: Message):
 
 @dp.callback_query(F.data == "admin_edit_prompt")
 async def on_admin_edit_prompt(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+    if callback.from_user.id not in ADMIN_IDS:
         return await callback.answer("Нет доступа", show_alert=True)
 
     WAITING_FOR_PROMPT.add(callback.from_user.id)
@@ -116,7 +123,7 @@ async def load_agent_prompt_from_db():
 
 @dp.callback_query(F.data == "admin_files")
 async def on_admin_files(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+    if callback.from_user.id not in ADMIN_IDS:
         return await callback.answer("Нет доступа", show_alert=True)
 
     await callback.message.answer(
@@ -129,27 +136,26 @@ async def on_admin_files(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "admin_files_upload")
 async def on_admin_files_upload(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+    if callback.from_user.id not in ADMIN_IDS:
         return await callback.answer("Нет доступа", show_alert=True)
 
     agent_file_manager.set_waiting_for_file(callback.from_user.id)
 
-    await callback.message.answer(
-        "Отправь файл (документ) одним сообщением.\n\n"
-    )
+    await callback.message.answer("Отправь файл (документ) одним сообщением.")
     await callback.answer()
 
 
 @dp.callback_query(F.data == "admin_files_list")
 async def on_admin_files_list(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+    if callback.from_user.id not in ADMIN_IDS:
         return await callback.answer("Нет доступа", show_alert=True)
 
     files = await agent_file_manager.get_recent_files(limit=10, offset=0)
     
     if not files:
         await callback.message.answer("Файлов агента пока нет.")
-        return await callback.answer()
+        await callback.answer()
+        return
 
     lines = ["Сохранённые файлы агента:\n"]
     keyboard_rows = []
@@ -183,7 +189,7 @@ async def on_admin_files_list(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("admin_file_download:"))
 async def on_admin_file_download(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+    if callback.from_user.id not in ADMIN_IDS:
         return await callback.answer("Нет доступа", show_alert=True)
 
     try:
@@ -208,7 +214,7 @@ async def on_admin_file_download(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("admin_file_delete:"))
 async def on_admin_file_delete(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+    if callback.from_user.id not in ADMIN_IDS:
         return await callback.answer("Нет доступа", show_alert=True)
 
     try:
@@ -224,55 +230,113 @@ async def on_admin_file_delete(callback: CallbackQuery):
     await callback.answer("Удалено.")
 
 
-@dp.message(CommandStart())
-async def handle_start(message: Message):
-    user_id = await db.save_user(
-        telegram_id=message.from_user.id,
-        username=message.from_user.username
-    )
+async def should_route_to_admin(user_telegram_id: int) -> Tuple[bool, Optional[int]]:
+    """
+    Возвращает:
+      (True, admin_id)  -> надо переслать админу (ручной режим активен)
+      (False, None)     -> надо обслуживать ИИ (режим ai или ручной протух)
+    """
+    mode, admin_id, taken_at = await db.get_conversation_state(user_telegram_id)
 
-    await message.answer(
-        "Привет! Я AI-ассистент 👋\n"
-        "Просто напиши мне вопрос, и я отвечу."
-    )
+    if mode is None:
+        return False, None
+
+    if mode != "admin":
+        return False, None
+
+    if not admin_id or taken_at is None:
+        await db.set_conversation_mode(user_telegram_id=user_telegram_id, mode="ai", taken_by_admin_id=None)
+        return False, None
+
+    now = datetime.now(timezone.utc)
+    if taken_at.tzinfo is None:
+        taken_at = taken_at.replace(tzinfo=timezone.utc)
+
+    minutes_passed = (now - taken_at).total_seconds() / 60
+
+    if minutes_passed > TAKEOVER_TIMEOUT_MINUTES:
+        await db.set_conversation_mode(user_telegram_id=user_telegram_id, mode="ai", taken_by_admin_id=None)
+        return False, None
+
+    return True, int(admin_id)
 
 
-@dp.message()
+@dp.message(F.chat.type == "private", ~F.text.startswith("/"))
 async def handle_message(message: Message):
     global AGENT_PROMPT
 
-    if message.from_user.id == ADMIN_ID and message.from_user.id in WAITING_FOR_PROMPT:
-        new_prompt = (message.text or "").strip()
+    user_id = message.from_user.id
+    text = message.text or ""
+
+    if user_id in ADMIN_IDS and user_id in WAITING_FOR_PROMPT:
+        new_prompt = text.strip()
 
         if not new_prompt:
             return await message.answer("Промпт не может быть пустым. Отправь текст ещё раз.")
 
         AGENT_PROMPT = new_prompt
-        WAITING_FOR_PROMPT.remove(message.from_user.id)
-
+        WAITING_FOR_PROMPT.remove(user_id)
         await db.set_setting("agent_prompt", AGENT_PROMPT)
 
         safe_prompt = html.escape(AGENT_PROMPT)
-
         await message.answer(
             "Промпт агента обновлён!\n\n"
             f"Текущий промпт:\n<code>{safe_prompt}</code>"
         )
         return
 
-    if message.from_user.id == ADMIN_ID and agent_file_manager.is_waiting_for_file(message.from_user.id):
+    if user_id in ADMIN_IDS and agent_file_manager.is_waiting_for_file(user_id):
         response = await agent_file_manager.handle_file_upload(message, AGENT_VECTOR_STORE_ID)
         if response:
             await message.answer(response)
         return
 
-    user_id = await db.save_user(
+    if user_id in ADMIN_IDS:
+        target_user_id = await db.get_admin_active_chat(user_id)
+
+        if not target_user_id:
+            await message.answer("Нет активного диалога. Открой чат через кнопку в лог-группе.")
+            return
+
+        await bot.send_message(chat_id=target_user_id, text=text)
+        await message.answer("Отправлено клиенту.")
+
+        internal_user_id = await db.save_user(telegram_id=target_user_id, username=None)
+        await db.save_message(user_id=internal_user_id, role="admin", content=text)
+
+        return
+
+    route_to_admin, admin_id = await should_route_to_admin(message.from_user.id)
+
+    if route_to_admin:
+        username = message.from_user.username
+        user_label = f"@{username}" if username else f"id:{user_id}"
+
+        await bot.send_message(
+            chat_id=admin_id,
+            text=f"Сообщение от клиента ({user_label}):\n{text}"
+        )
+
+        await send_admin_user_message(
+            bot=bot,
+            user=message.from_user,
+            user_message=text,
+        )
+
+        internal_user_id = await db.save_user(
+            telegram_id=message.from_user.id,
+            username=message.from_user.username
+        )
+        await db.save_message(user_id=internal_user_id, role="user", content=text)
+        return
+
+    internal_user_id = await db.save_user(
         telegram_id=message.from_user.id,
         username=message.from_user.username
     )
 
     user_text = message.text or ""
-    await db.save_message(user_id=user_id, role="user", content=user_text)
+    await db.save_message(user_id=internal_user_id, role="user", content=user_text)
 
     waiting_message = await message.answer("думаю...")
 
@@ -286,8 +350,15 @@ async def handle_message(message: Message):
         await waiting_message.edit_text(f"Произошла ошибка: {e}")
         return
 
-    await db.save_message(user_id=user_id, role="assistant", content=reply_text)
+    await db.save_message(user_id=internal_user_id, role="assistant", content=reply_text)
     await waiting_message.edit_text(reply_text, parse_mode=None)
+
+    await send_ai_log(
+        bot=message.bot,            
+        user=message.from_user,   
+        user_message=user_text,  
+        ai_answer=reply_text,       
+    )
 
 
 async def main():

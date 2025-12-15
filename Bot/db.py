@@ -2,6 +2,7 @@ import os
 import asyncpg
 from typing import Optional
 from dotenv import load_dotenv
+from datetime import datetime
 
 load_dotenv()
 
@@ -58,6 +59,27 @@ class Database:
                     role TEXT NOT NULL,            -- 'user' / 'assistant' / 'system'
                     content TEXT NOT NULL,
                     created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                """
+            )
+
+            await self.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversations (
+                    user_telegram_id BIGINT PRIMARY KEY,
+                    mode TEXT NOT NULL DEFAULT 'ai',         
+                    taken_by_admin_id BIGINT,               
+                    taken_at TIMESTAMPTZ                    
+                );
+                """
+            )
+
+            await self.execute(
+                """
+                CREATE TABLE IF NOT EXISTS admin_sessions (
+                    admin_id BIGINT PRIMARY KEY,
+                    active_user_telegram_id BIGINT,
+                    updated_at TIMESTAMP DEFAULT NOW()
                 );
                 """
             )
@@ -247,5 +269,64 @@ class Database:
     async def count_agent_files(self) -> int:
         row = await self.fetchrow("SELECT COUNT(*) AS c FROM agent_files;")
         return row["c"] if row else 0
+
+
+    async def set_conversation_mode(
+        self,
+        user_telegram_id: int,
+        mode: str,
+        taken_by_admin_id: Optional[int] = None,
+    ) -> None:
+
+        query = """
+        INSERT INTO conversations (user_telegram_id, mode, taken_by_admin_id, taken_at)
+        VALUES ($1, $2, $3, CASE WHEN $2 = 'admin' THEN NOW() ELSE NULL END)
+        ON CONFLICT (user_telegram_id) 
+        DO UPDATE SET
+            mode = EXCLUDED.mode,
+            taken_by_admin_id = EXCLUDED.taken_by_admin_id,
+            taken_at = CASE WHEN EXCLUDED.mode='admin' THEN NOW() ELSE NULL END;
+        """
+
+        await self.pool.execute(query, user_telegram_id, mode, taken_by_admin_id)
+
+
+    async def set_admin_active_chat(self, admin_id: int, user_telegram_id: int) -> None:
+        query = """
+        INSERT INTO admin_sessions (admin_id, active_user_telegram_id, updated_at)
+        VALUES ($1, $2, NOW())
+        ON CONFLICT (admin_id)
+        DO UPDATE SET active_user_telegram_id = EXCLUDED.active_user_telegram_id,
+                    updated_at = NOW();
+        """
+        await self.pool.execute(query, admin_id, user_telegram_id)
+
+
+    async def get_admin_active_chat(self, admin_id: int) -> Optional[int]:
+        query = """
+        SELECT active_user_telegram_id
+        FROM admin_sessions
+        WHERE admin_id = $1;
+        """
+        row = await self.pool.fetchrow(query, admin_id)
+        return row["active_user_telegram_id"] if row else None
+
+
+    async def clear_admin_active_chat(self, admin_id: int) -> None:
+        query = "UPDATE admin_sessions SET active_user_telegram_id = NULL, updated_at = NOW() WHERE admin_id = $1;"
+        await self.pool.execute(query, admin_id)
+
+
+    async def get_conversation_state(self, user_telegram_id: int) -> tuple[Optional[str], Optional[int], Optional[datetime]]:
+        query = """
+        SELECT mode, taken_by_admin_id, taken_at
+        FROM conversations
+        WHERE user_telegram_id = $1;
+        """
+        row = await self.pool.fetchrow(query, user_telegram_id)
+        if not row:
+            return None, None, None
+        return row["mode"], row["taken_by_admin_id"], row["taken_at"]
+
 
 db = Database()
